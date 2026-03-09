@@ -12,6 +12,7 @@
 # never in a file that gets committed to git.
 # ===========================================================================
 
+docker rm -f vault-dev 2>/dev/null || true
 rm -rf secrets-demo
 mkdir secrets-demo
 cd secrets-demo
@@ -172,49 +173,69 @@ echo "  Repo → Settings → Secrets and variables → Actions → New reposito
 
 
 # ===========================================================================
-# BLOCK 6 — Enterprise secrets managers
+# BLOCK 6 — HashiCorp Vault: live secrets manager demo
 #
-# .env files and GitHub Secrets work for basic cases, but production
-# environments use dedicated secrets managers that add:
-#   - Audit logs (who accessed what, when)
-#   - Dynamic secret rotation (auto-rotate credentials on a schedule)
-#   - Fine-grained access control per service
-#   - Secrets never stored on disk — only fetched at runtime
+# Vault is the industry standard for enterprise secrets management.
+# Apps never see secrets on disk — they authenticate to Vault and
+# fetch them at runtime via API. Vault logs every access.
 #
-# These map directly to Exam Objective 3.1: encrypted key vault, revocation,
-# lease management, tokenization, dynamic secret rotation.
+# Dev mode = single-node, in-memory, instant start. Perfect for demos.
+# Production: HA cluster with encrypted storage (Raft or Consul).
+#
+# Exam Objective 3.1: encrypted key vault, revocation, lease management,
+#                     tokenization, dynamic secret rotation.
+#
+# REQUIRES: Docker (already needed for demo 08 and 21)
+# Students: docker pull hashicorp/vault  (one-time, ~100MB)
 # ===========================================================================
 
-cat > secrets_manager_reference.sh << 'EOF'
-#!/bin/bash
-# Reference: how secrets managers work in practice
-# (These commands require the respective CLI tools installed)
+echo ""
+echo "--- BLOCK 6: HashiCorp Vault — live secrets manager ---"
 
-# --- HashiCorp Vault ---
-# Fetch a secret at runtime (never stored on disk):
-#   vault kv get -field=value secret/my-app/api-key
+# Clean up any previous run
+docker rm -f vault-dev 2>/dev/null || true
 
-# Write a secret (only admins do this, not the app itself):
-#   vault kv put secret/my-app/api-key value="sk-abc123"
+# Start Vault in dev mode — instant, no config needed
+docker run -d --name vault-dev \
+  -p 8200:8200 \
+  --cap-add=IPC_LOCK \
+  -e VAULT_DEV_ROOT_TOKEN_ID=root \
+  -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+  hashicorp/vault:latest
 
-# Dynamic secrets: Vault generates a temporary DB credential, auto-revokes it:
-#   vault read database/creds/my-app-role
-#   # Returns: username=v-app-abc123  password=xyz  lease_duration=1h
+echo "Waiting for Vault..."
+until docker exec vault-dev sh -c \
+  "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root vault status" \
+  >/dev/null 2>&1; do sleep 1; done
+echo "Vault is up."
+echo ""
 
-# --- AWS Secrets Manager ---
-# Fetch a secret:
-#   aws secretsmanager get-secret-value --secret-id my-app/api-key
-
-# In a Python app (boto3):
-#   import boto3, json
-#   client = boto3.client("secretsmanager")
-#   secret = json.loads(client.get_secret_value(SecretId="my-app/api-key")["SecretString"])
-
-# --- The key difference from .env ---
-# .env file      : secret lives on disk, manually rotated, commit risk
-# Secrets manager: fetched via API, audit logged, auto-rotates, revocable
-EOF
+# Write secrets (this is what an admin or a deployment pipeline does)
+docker exec vault-dev sh -c \
+  "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root \
+   vault kv put secret/myapp api_key=sk-demo-key-abc123 db_password=s3cr3t_pass"
 
 echo ""
-echo "--- BLOCK 6: enterprise secrets manager reference ---"
-cat secrets_manager_reference.sh
+echo "--- Read the secret back (what the app does at runtime): ---"
+docker exec vault-dev sh -c \
+  "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root \
+   vault kv get secret/myapp"
+
+echo ""
+echo "--- List all secret paths (full audit trail in production): ---"
+docker exec vault-dev sh -c \
+  "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root \
+   vault kv list secret/"
+
+echo ""
+echo "Open the Vault UI in your browser:"
+echo "  URL  : http://localhost:8200"
+echo "  Token: root"
+echo ""
+echo "In the UI you can see: secrets, access policies, audit logs."
+echo ""
+echo "Key difference from .env:"
+echo "  .env file : secret on disk, manually rotated, commit risk"
+echo "  Vault     : fetched via API at runtime, audit logged, auto-rotates"
+echo ""
+echo "Cleanup: docker rm -f vault-dev"

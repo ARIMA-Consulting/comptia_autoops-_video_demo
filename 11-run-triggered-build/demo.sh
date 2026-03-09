@@ -2,15 +2,22 @@
 # CompTIA AutoOps+ | Run a Triggered Build
 # Exam Objective 3.3 — Pipeline triggers: push trigger, git variables (tag/branch/commit)
 #
-# ⚠ MANUAL SETUP REQUIRED before recording:
-#   1. Create a new GitHub repo (or use the class repo)
-#   2. Enable GitHub Actions on it
-#   3. Clone it locally
-#   4. Copy the workflow file from BLOCK 1 into .github/workflows/
-#   5. Update REPO_URL below with your actual repo URL
+# BLOCK 3 (local simulation) runs offline — no setup needed.
+# BLOCK 4 (act) runs GitHub Actions locally in Docker — no GitHub account needed.
 #
-# The local simulation in BLOCK 3 works without any setup.
+# For BLOCK 4 (act):
+#   Install act:
+#     curl -Lo ~/.local/bin/act.tar.gz \
+#       https://github.com/nektos/act/releases/latest/download/act_Linux_x86_64.tar.gz \
+#       && tar -xz -C ~/.local/bin/ -f ~/.local/bin/act.tar.gz act \
+#       && rm ~/.local/bin/act.tar.gz
+#   Docker must be running.
+#
+# To also push to GitHub (BLOCK 2):
+#   1. Create a GitHub repo and enable Actions on it
+#   2. Update REPO_URL below
 
+export PATH="$HOME/.local/bin:$PATH"
 REPO_URL="https://github.com/YOUR_USERNAME/YOUR_REPO"
 
 
@@ -139,3 +146,65 @@ pytest test_app.py -v
 echo ""
 echo "Build $SIMULATED_SHA passed."
 deactivate
+
+
+# ===========================================================================
+# BLOCK 4 — Run GitHub Actions locally with act
+#
+# act (github.com/nektos/act) runs your GitHub Actions workflows
+# inside Docker containers — no push to GitHub required.
+# This is exactly what GitHub's runners do, running on your machine.
+#
+# We use python:3.12-slim as the runner image (already cached from other demos).
+# The --bind flag mounts this directory into the container so pytest finds your files.
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 4: GitHub Actions running locally via act ---"
+echo ""
+
+# Create a workflow tuned for local act execution with python:3.12-slim
+mkdir -p .github/workflows
+
+cat > .github/workflows/ci-act.yml << 'EOF'
+name: CI (local act runner)
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show build context
+        run: |
+          echo "Branch   : ${{ github.ref_name }}"
+          echo "Commit   : ${{ github.sha }}"
+          echo "Workflow : ${{ github.workflow }}"
+
+      - name: Install dependencies
+        run: pip install pytest -q
+
+      - name: Run tests
+        run: pytest test_app.py -v
+
+      - name: Confirm build
+        run: echo "Build passed — artifact would be published here."
+EOF
+
+echo "Running workflow with act (using python:3.12-slim as the runner)..."
+echo ""
+
+act push \
+  --platform ubuntu-latest=python:3.12-slim \
+  --bind \
+  --container-architecture linux/amd64 \
+  -W .github/workflows/ci-act.yml \
+  --artifact-server-path /tmp/act-artifacts \
+  2>&1
+
+echo ""
+echo "act replays EXACTLY what GitHub Actions would run."
+echo "Use this to test and debug workflows before you push."
+echo ""
+echo "To run a specific job:  act push -j build"
+echo "To list available jobs: act --list"

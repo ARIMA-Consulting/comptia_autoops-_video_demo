@@ -1,7 +1,18 @@
 #!/bin/bash
 # CompTIA AutoOps+ | Zero-Downtime Deployment
 # Exam Objective 4.1 — Delivery methods: Blue-green, Canary, Rolling, In-place
+#
+# REQUIRES for BLOCK 5 (Kubernetes):
+#   kubectl  → curl -Lo ~/.local/bin/kubectl \
+#               https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl \
+#               && chmod +x ~/.local/bin/kubectl
+#   k3d      → curl -Lo ~/.local/bin/k3d \
+#               https://github.com/k3d-io/k3d/releases/latest/download/k3d-linux-amd64 \
+#               && chmod +x ~/.local/bin/k3d
+#   Docker must be running (already needed for demo 08 and 21)
 
+
+export PATH="$HOME/.local/bin:$PATH"
 
 # ===========================================================================
 # BLOCK 0 — Setup
@@ -13,13 +24,23 @@
 #   Blue-Green : run two identical environments, switch traffic instantly
 #   Rolling    : replace instances one at a time, always some running
 #   Canary     : route a small % of traffic to new version, watch it, then roll out
+#
+# We also spin up a real Kubernetes cluster (k3d) so BLOCK 5 is live.
+# k3d wraps k3s (lightweight Kubernetes) inside Docker containers —
+# no cloud account or VM needed.
 # ===========================================================================
 
 rm -rf deployment-demo
 mkdir deployment-demo
 cd deployment-demo
-
 echo "v1.0" > current_version.txt
+
+# Spin up local Kubernetes cluster for BLOCK 5
+echo "Creating local k3d cluster (takes ~30s)..."
+k3d cluster delete autoops-deploy 2>/dev/null || true
+k3d cluster create autoops-deploy --wait
+echo "Cluster ready. $(kubectl get nodes --no-headers | wc -l) node(s) available."
+echo ""
 echo "Deployment demo ready."
 
 
@@ -153,42 +174,65 @@ python3 deploy_canary.py
 
 
 # ===========================================================================
-# BLOCK 5 — Kubernetes deployment strategies
+# BLOCK 5 — Kubernetes: live rolling update and rollback
 #
-# In Kubernetes, rolling updates are the DEFAULT — every kubectl apply
-# replaces pods one at a time without taking the service down.
-# These commands are what you use in production with a real cluster.
-# (kubectl not required to run this block — it prints the commands for reference)
+# In Kubernetes, rolling updates are the DEFAULT strategy.
+# kubectl replaces pods one-at-a-time — users see zero downtime.
+# We have a real k3d cluster running — these commands actually execute.
 # ===========================================================================
 
+export PATH="$HOME/.local/bin:$PATH"
 echo ""
-echo "--- BLOCK 5: kubectl deployment commands ---"
+echo "--- BLOCK 5: kubectl on a live Kubernetes cluster ---"
 echo ""
-echo "Rolling update (Kubernetes default):"
-echo "  kubectl set image deployment/my-app app=my-app:v2.0"
-echo "  kubectl rollout status deployment/my-app        # watch progress"
-echo "  kubectl rollout undo deployment/my-app          # instant rollback"
+
+# Show the live cluster
+kubectl get nodes
 echo ""
-echo "Control rolling update speed (in the Deployment manifest):"
-echo "  strategy:"
-echo "    type: RollingUpdate"
-echo "    rollingUpdate:"
-echo "      maxUnavailable: 1   # at most 1 pod down at a time"
-echo "      maxSurge: 1         # at most 1 extra pod during the update"
+
+# Deploy v1.0 with 3 replicas
+echo "Deploying my-app v1.0 (nginx:1.24-alpine) — 3 replicas..."
+kubectl create deployment my-app --image=nginx:1.24-alpine --replicas=3
+kubectl rollout status deployment/my-app
 echo ""
-echo "Canary in Kubernetes (split traffic with replicas):"
-echo "  kubectl scale deployment my-app-v1 --replicas=9   # 90% traffic"
-echo "  kubectl scale deployment my-app-v2 --replicas=1   # 10% canary"
-echo "  # Watch error rates. If healthy:"
-echo "  kubectl scale deployment my-app-v1 --replicas=0   # promote canary to 100%"
+kubectl get pods -l app=my-app
+
 echo ""
-echo "Blue-Green in Kubernetes (swap the Service selector):"
+echo "--- Rolling update: v1.0 → v2.0 (watch pods replaced one-at-a-time) ---"
+kubectl set image deployment/my-app nginx=nginx:1.25-alpine
+kubectl rollout status deployment/my-app
+echo ""
+kubectl get pods -l app=my-app
+
+echo ""
+echo "--- Rollback: something went wrong, revert to v1.0 ---"
+kubectl rollout undo deployment/my-app
+kubectl rollout status deployment/my-app
+
+echo ""
+echo "--- Rollout history (Kubernetes tracks every revision) ---"
+kubectl rollout history deployment/my-app
+
+echo ""
+echo "--- Canary: run v1 and v2 in parallel (10% canary) ---"
+kubectl create deployment my-app-canary --image=nginx:1.25-alpine --replicas=1
+echo ""
+kubectl get deployments
+echo ""
+echo "  my-app        : 3 replicas = 75% of traffic  (stable v1)"
+echo "  my-app-canary : 1 replica  = 25% of traffic  (new v2)"
+echo ""
+echo "If canary metrics look good:"
+echo "  kubectl scale deployment my-app-canary --replicas=3"
+echo "  kubectl scale deployment my-app --replicas=0"
+
+echo ""
+echo "Blue-Green in Kubernetes: swap the Service selector — one command flips 100%"
 echo "  kubectl patch service my-app -p '{\"spec\":{\"selector\":{\"version\":\"v2\"}}}'"
-echo "  # One command flips 100% of traffic — same concept as the script above"
 
 
 # ===========================================================================
-# BLOCK 6 — Summary: when to use each strategy
+# BLOCK 6 — Summary and cleanup
 # ===========================================================================
 
 echo ""
@@ -198,3 +242,5 @@ echo "In-place    : simplest, cheapest, HAS DOWNTIME — avoid for production"
 echo "Blue-Green  : instant cutover + instant rollback, needs 2x infrastructure"
 echo "Rolling     : no downtime, gradual, rollback is slower (Kubernetes default)"
 echo "Canary      : safest for risky changes, catches issues before full rollout"
+echo ""
+echo "Cleanup: k3d cluster delete autoops-deploy"

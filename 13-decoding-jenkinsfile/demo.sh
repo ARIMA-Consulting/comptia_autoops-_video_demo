@@ -4,12 +4,24 @@
 #
 # Jenkins uses a Groovy-based DSL (not YAML). The Jenkinsfile lives in the
 # root of your repo and Jenkins reads it to know how to build your project.
+#
+# REQUIRES for BLOCK 4 (live Jenkins):
+#   Docker must be running (already needed for other demos)
+#   First run: docker build takes 2-3 minutes (downloads ~200MB of plugins)
+#   Subsequent runs: instant (Docker layer cache)
 
 
 # ===========================================================================
-# BLOCK 0 — Setup
+# BLOCK 0 — Setup: project files + build and start Jenkins
+#
+# The Docker image bakes in the Pipeline plugin so startup is instant.
+# We build it here (before recording) so BLOCK 4 is ready to show students.
 # ===========================================================================
 
+DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Clean up any previous run
+docker rm -f jenkins-demo 2>/dev/null || true
 rm -rf jenkinsfile-demo
 mkdir jenkinsfile-demo
 cd jenkinsfile-demo
@@ -30,7 +42,26 @@ def test_greet(capsys):
     assert "Hello" in out
 EOF
 
-echo "Files ready."
+echo "Project files ready."
+echo ""
+echo "Building Jenkins Docker image (first run: ~2-3 min, cached after)..."
+docker build -t jenkins-autoops "$DEMO_DIR/jenkins/"
+echo ""
+
+echo "Starting Jenkins..."
+docker run -d \
+  --name jenkins-demo \
+  -p 8080:8080 \
+  -p 50000:50000 \
+  jenkins-autoops
+
+echo "Waiting for Jenkins to finish starting..."
+until curl -s http://localhost:8080/api/json >/dev/null 2>&1; do
+  sleep 3
+done
+echo "Jenkins is ready at http://localhost:8080"
+echo ""
+echo "Setup complete. Begin recording."
 
 
 # ===========================================================================
@@ -160,3 +191,36 @@ echo "Groovy vs YAML:"
 echo "  Jenkins        = Groovy DSL  (Jenkinsfile, no extension)"
 echo "  GitHub Actions = YAML        (.github/workflows/*.yml)"
 echo "  GitLab CI      = YAML        (.gitlab-ci.yml)"
+
+
+# ===========================================================================
+# BLOCK 4 — Live Jenkins: trigger the pipeline and see it run
+#
+# Jenkins is already running from BLOCK 0 setup.
+# The 'autoops-demo' pipeline job was pre-created by the init script.
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 4: Jenkins pipeline running live ---"
+echo ""
+echo "Open your browser: http://localhost:8080"
+echo "You should see the 'autoops-demo' pipeline job listed on the dashboard."
+echo ""
+
+# Trigger a build via the Jenkins REST API
+echo "Triggering pipeline build..."
+curl -s -X POST http://localhost:8080/job/autoops-demo/build
+sleep 2
+
+echo ""
+echo "Build triggered. In your browser:"
+echo "  1. Click 'autoops-demo'"
+echo "  2. Click the build number in the left panel (e.g. '#1')"
+echo "  3. Click 'Console Output' to see each stage execute"
+echo ""
+echo "The Stage View shows stages as columns with pass/fail colours:"
+echo "  [Build] ✓ → [Test] ✓ → [Deploy] ✓"
+echo ""
+echo "This is exactly what your team sees in a real Jenkins setup."
+echo ""
+echo "Cleanup: docker rm -f jenkins-demo"
