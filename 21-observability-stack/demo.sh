@@ -1,156 +1,246 @@
 #!/bin/bash
 # CompTIA AutoOps+ | Observability Stack Overview
 # Exam Objective 4.2 — Uptime, SLOs, SLAs, feedback loop, MTBF
-# Exam Objective 3.2 — AI-based log analysis
-
-
-# ===========================================================================
-# BLOCK 0 — Setup
 #
-# Observability = knowing what your system is doing, without having to guess.
-# The three pillars:
-#   Logs    : timestamped records of what happened (text events)
-#   Metrics : numerical measurements over time (CPU %, request count, latency)
-#   Traces  : follow a single request through multiple services
+# Shows a REAL observability stack running locally via Docker:
+#   app       → emits Prometheus metrics on :8000/metrics
+#   Prometheus → scrapes the app every 5s, stores time-series data  (:9090)
+#   Grafana    → queries Prometheus and visualizes it               (:3000)
 #
-# You can have a working system without observability.
-# You just won't know it's broken until a customer tells you.
-# ===========================================================================
-
-rm -rf observability-demo
-mkdir observability-demo
-cd observability-demo
-python3 -m venv venv && source venv/bin/activate
-pip install requests -q
-echo "Setup done."
+# REQUIRES: Docker, internet (pulls images on first run, cached after)
 
 
 # ===========================================================================
-# BLOCK 1 — Structured logging
+# BLOCK 0 — Setup: build the full stack (run this before recording)
 #
-# Plain text logs are hard to search. Structured logs (JSON) can be
-# queried by any log aggregator (Splunk, Datadog, CloudWatch, ELK stack).
+# docker compose up -d : starts all three services in the background
 # ===========================================================================
 
-cat > logger.py << 'EOF'
-import json, time
-from datetime import datetime, timezone
+rm -rf obs-demo
+mkdir -p obs-demo/app obs-demo/grafana/provisioning/datasources
+cd obs-demo
 
-def log(level: str, message: str, **context):
-    """Emit a structured JSON log line."""
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "level":     level,
-        "message":   message,
-        **context,
-    }
-    print(json.dumps(entry))
+# --- The metrics app ---
+cat > app/app.py << 'EOF'
+from prometheus_client import start_http_server, Counter, Gauge, Histogram
+import time, random
 
-# Simulate a request being processed
-log("INFO",  "Request received",  method="GET", path="/api/users", request_id="req-001")
-log("INFO",  "Database query",    table="users", rows_returned=42, duration_ms=12)
-log("INFO",  "Response sent",     status=200, duration_ms=18, request_id="req-001")
+# Three metric types:
+#   Counter   = always increases (requests, errors)
+#   Gauge     = goes up and down (active users, queue length)
+#   Histogram = tracks distribution (latency buckets)
+REQUEST_COUNT = Counter('app_requests_total', 'Total HTTP requests', ['endpoint', 'status'])
+ACTIVE_USERS  = Gauge('app_active_users', 'Currently active users')
+LATENCY       = Histogram('app_request_latency_seconds', 'Request latency in seconds',
+                          buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0])
 
-# Simulate an error
-log("ERROR", "Database timeout",  table="orders", duration_ms=5001,
-             error="connection timed out", request_id="req-002")
-log("WARN",  "Retry attempt",     attempt=1, max_retries=3, request_id="req-002")
+start_http_server(8000)
+print("Metrics server running on :8000/metrics", flush=True)
+
+while True:
+    endpoint = random.choice(['/api/users', '/api/posts', '/health'])
+    status   = '500' if random.random() < 0.03 else '200'   # ~3% error rate
+    latency  = abs(random.gauss(0.1, 0.03))
+
+    REQUEST_COUNT.labels(endpoint=endpoint, status=status).inc()
+    ACTIVE_USERS.set(random.randint(10, 100))
+    LATENCY.observe(latency)
+    time.sleep(0.2)
 EOF
 
-echo ""
-echo "--- BLOCK 1: structured logs ---"
-python3 logger.py
-
-
-# ===========================================================================
-# BLOCK 2 — Metrics collection
-#
-# Metrics are numbers sampled over time. You alert on metrics thresholds.
-# Common metric types: counter (always goes up), gauge (up and down), histogram
-# ===========================================================================
-
-cat > metrics.py << 'EOF'
-import time, statistics, random
-
-class SimpleMetrics:
-    def __init__(self):
-        self.request_count    = 0
-        self.error_count      = 0
-        self.response_times   = []
-
-    def record_request(self, duration_ms: float, success: bool):
-        self.request_count += 1
-        self.response_times.append(duration_ms)
-        if not success:
-            self.error_count += 1
-
-    def report(self):
-        total = self.request_count
-        if total == 0:
-            return
-        error_rate = (self.error_count / total) * 100
-        times = sorted(self.response_times)
-        print(f"  request_count   : {total}")
-        print(f"  error_count     : {self.error_count}")
-        print(f"  error_rate      : {error_rate:.1f}%")
-        print(f"  latency_avg_ms  : {statistics.mean(times):.0f}")
-        print(f"  latency_p95_ms  : {times[int(len(times)*0.95)]:.0f}")
-        print(f"  latency_max_ms  : {max(times):.0f}")
-
-        SLO_ERROR_RATE  = 1.0
-        SLO_LATENCY_P95 = 300
-        print()
-        p95 = times[int(len(times)*0.95)]
-        print(f"  SLO error_rate  <= {SLO_ERROR_RATE}%   : {'✓ MET' if error_rate <= SLO_ERROR_RATE else '✗ BREACHED'}")
-        print(f"  SLO p95_latency <= {SLO_LATENCY_P95}ms : {'✓ MET' if p95 <= SLO_LATENCY_P95 else '✗ BREACHED'}")
-
-m = SimpleMetrics()
-random.seed(42)
-for _ in range(100):
-    duration = random.gauss(150, 40)
-    success  = random.random() > 0.005   # 0.5% error rate
-    m.record_request(max(duration, 10), success)
-
-print("=== Metrics Report ===")
-m.report()
+cat > app/requirements.txt << 'EOF'
+prometheus-client
 EOF
 
-echo ""
-echo "--- BLOCK 2: metrics ---"
-python3 metrics.py
-
-
-# ===========================================================================
-# BLOCK 3 — Log analysis: find errors in a log file
-#
-# The most common observability task: search the logs to answer
-# "what happened right before the system went down?"
-# ===========================================================================
-
-cat > app.log << 'EOF'
-{"timestamp":"2024-03-01T12:00:01Z","level":"INFO","message":"Request received","path":"/api/users"}
-{"timestamp":"2024-03-01T12:00:02Z","level":"INFO","message":"Response sent","status":200}
-{"timestamp":"2024-03-01T12:00:03Z","level":"ERROR","message":"Database timeout","duration_ms":5001}
-{"timestamp":"2024-03-01T12:00:04Z","level":"WARN","message":"Retry attempt","attempt":1}
-{"timestamp":"2024-03-01T12:00:05Z","level":"ERROR","message":"Connection refused","host":"db-primary"}
-{"timestamp":"2024-03-01T12:00:06Z","level":"INFO","message":"Failover to replica","host":"db-replica"}
-{"timestamp":"2024-03-01T12:00:07Z","level":"INFO","message":"Response sent","status":200}
+cat > app/Dockerfile << 'EOF'
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY app.py .
+CMD ["python", "app.py"]
 EOF
 
-echo ""
-echo "--- BLOCK 3: find all ERROR entries in the log ---"
-python3 -c "
-import json
-errors = []
-with open('app.log') as f:
-    for line in f:
-        entry = json.loads(line)
-        if entry['level'] == 'ERROR':
-            errors.append(entry)
+# --- Prometheus configuration: scrape the app every 5 seconds ---
+cat > prometheus.yml << 'EOF'
+global:
+  scrape_interval: 5s
 
-print(f'Found {len(errors)} errors:')
-for e in errors:
-    print(f'  [{e[\"timestamp\"]}] {e[\"message\"]}')
+scrape_configs:
+  - job_name: 'my-app'
+    static_configs:
+      - targets: ['app:8000']
+EOF
+
+# --- Grafana: auto-configure Prometheus as the default data source ---
+cat > grafana/provisioning/datasources/prometheus.yml << 'EOF'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    access: proxy
+EOF
+
+# --- Docker Compose: wires everything together ---
+cat > docker-compose.yml << 'EOF'
+services:
+  app:
+    build: ./app
+    ports:
+      - "8765:8000"
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+EOF
+
+echo "Starting observability stack..."
+docker compose up -d --build
+
+echo "Waiting for services to be ready..."
+for i in $(seq 1 30); do
+    if curl -s http://localhost:8765/metrics > /dev/null 2>&1 && \
+       curl -s http://localhost:9090/-/ready > /dev/null 2>&1 && \
+       curl -s http://localhost:3000/api/health > /dev/null 2>&1; then
+        echo "All services ready."
+        break
+    fi
+    sleep 2
+done
+
+echo ""
+echo "=== Stack is running ==="
+docker compose ps
+
+
+# ===========================================================================
+# BLOCK 1 — The raw metrics format Prometheus reads
+#
+# Prometheus uses a plain-text format called the exposition format.
+# Every metric is a key-value pair with optional labels.
+# curl the /metrics endpoint to see exactly what Prometheus scrapes.
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 1: raw metrics from the app ---"
+curl -s http://localhost:8765/metrics | grep "^app_"
+
+
+# ===========================================================================
+# BLOCK 2 — Query Prometheus in the terminal, then open the UI
+#
+# Prometheus has a built-in HTTP API — you can query it with curl.
+# PromQL (Prometheus Query Language) is how you ask questions about your data.
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 2: query Prometheus API ---"
+
+# Give Prometheus time to complete at least one scrape cycle (5s interval)
+sleep 6
+
+echo "Total requests by endpoint (via Prometheus HTTP API):"
+curl -s "http://localhost:9090/api/v1/query?query=app_requests_total" \
+  | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+results = data.get('data', {}).get('result', [])
+if not results:
+    print('  (no data yet — Prometheus is still warming up)')
+for r in results:
+    print(f\"  {r['metric'].get('endpoint','?')}  status={r['metric'].get('status','?')}  count={r['value'][1]}\")
 "
 
-deactivate
+echo ""
+echo "Open Prometheus UI: http://localhost:9090"
+echo "  Try query: app_requests_total"
+echo "  Go to Status → Targets to confirm the app is being scraped (state: UP)"
+
+
+# ===========================================================================
+# BLOCK 3 — Grafana: visualize the metrics
+#
+# Grafana connects to Prometheus and lets you build dashboards.
+# The Prometheus datasource is already configured — just open and explore.
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 3: open Grafana ---"
+echo ""
+echo "  URL      : http://localhost:3000"
+echo "  Username : admin"
+echo "  Password : admin"
+echo ""
+echo "Steps to show students:"
+echo "  1. Login → you land on the Home dashboard"
+echo "  2. Left sidebar → Explore"
+echo "  3. Datasource dropdown → select Prometheus (already configured)"
+echo "  4. Enter query: app_requests_total"
+echo "  5. Click Run Query — see the time-series graph"
+echo "  6. Change query to: rate(app_requests_total[1m])  (requests per second)"
+echo "  7. Change query to: app_active_users              (gauge going up and down)"
+echo ""
+echo "  To build a dashboard:"
+echo "  Dashboards → New → Add visualization → same queries above"
+
+
+# ===========================================================================
+# BLOCK 4 — The three pillars: logs, metrics, traces
+#
+# Prometheus + Grafana cover METRICS.
+# The other two pillars in a full stack:
+#   Logs   : Loki (Grafana's log aggregator) or ELK/Splunk/Datadog
+#   Traces : Tempo/Jaeger — follow a single request across multiple services
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 4: structured logging (the logs pillar) ---"
+
+cat > /tmp/obs_log_demo.py << 'EOF'
+import json
+from datetime import datetime, timezone
+
+def log(level, message, **ctx):
+    print(json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
+                      "level": level, "msg": message, **ctx}))
+
+log("INFO",  "Request received", method="GET", path="/api/users", request_id="r-001")
+log("INFO",  "DB query",         table="users", rows=42, duration_ms=12)
+log("INFO",  "Response sent",    status=200, duration_ms=18, request_id="r-001")
+log("ERROR", "DB timeout",       duration_ms=5001, error="connection refused", request_id="r-002")
+EOF
+
+python3 /tmp/obs_log_demo.py
+
+echo ""
+echo "Structured JSON logs can be ingested by Loki, Datadog, Splunk, or CloudWatch."
+echo "Grafana can visualize both Prometheus metrics and Loki logs on the same dashboard."
+
+
+# ===========================================================================
+# BLOCK 5 — Cleanup
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 5: stop the stack ---"
+docker compose down
+echo "Stack stopped."
