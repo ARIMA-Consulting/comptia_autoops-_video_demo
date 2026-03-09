@@ -153,7 +153,42 @@ python3 deploy_canary.py
 
 
 # ===========================================================================
-# BLOCK 5 — Summary: when to use each strategy
+# BLOCK 5 — Kubernetes deployment strategies
+#
+# In Kubernetes, rolling updates are the DEFAULT — every kubectl apply
+# replaces pods one at a time without taking the service down.
+# These commands are what you use in production with a real cluster.
+# (kubectl not required to run this block — it prints the commands for reference)
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 5: kubectl deployment commands ---"
+echo ""
+echo "Rolling update (Kubernetes default):"
+echo "  kubectl set image deployment/my-app app=my-app:v2.0"
+echo "  kubectl rollout status deployment/my-app        # watch progress"
+echo "  kubectl rollout undo deployment/my-app          # instant rollback"
+echo ""
+echo "Control rolling update speed (in the Deployment manifest):"
+echo "  strategy:"
+echo "    type: RollingUpdate"
+echo "    rollingUpdate:"
+echo "      maxUnavailable: 1   # at most 1 pod down at a time"
+echo "      maxSurge: 1         # at most 1 extra pod during the update"
+echo ""
+echo "Canary in Kubernetes (split traffic with replicas):"
+echo "  kubectl scale deployment my-app-v1 --replicas=9   # 90% traffic"
+echo "  kubectl scale deployment my-app-v2 --replicas=1   # 10% canary"
+echo "  # Watch error rates. If healthy:"
+echo "  kubectl scale deployment my-app-v1 --replicas=0   # promote canary to 100%"
+echo ""
+echo "Blue-Green in Kubernetes (swap the Service selector):"
+echo "  kubectl patch service my-app -p '{\"spec\":{\"selector\":{\"version\":\"v2\"}}}'"
+echo "  # One command flips 100% of traffic — same concept as the script above"
+
+
+# ===========================================================================
+# BLOCK 6 — Summary: when to use each strategy
 # ===========================================================================
 
 echo ""
@@ -161,5 +196,5 @@ echo "=== Deployment strategy comparison ==="
 echo ""
 echo "In-place    : simplest, cheapest, HAS DOWNTIME — avoid for production"
 echo "Blue-Green  : instant cutover + instant rollback, needs 2x infrastructure"
-echo "Rolling     : no downtime, gradual, rollback is slower"
+echo "Rolling     : no downtime, gradual, rollback is slower (Kubernetes default)"
 echo "Canary      : safest for risky changes, catches issues before full rollout"

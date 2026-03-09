@@ -23,6 +23,18 @@ requests
 pytest
 EOF
 
+# A Dockerfile is how CI produces a portable, reproducible artifact.
+# Instead of uploading a .py file, the pipeline builds a container image
+# that includes the app AND everything it needs to run.
+cat > Dockerfile << 'EOF'
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY app.py .
+CMD ["python", "app.py"]
+EOF
+
 echo "Files created."
 
 
@@ -77,12 +89,15 @@ jobs:
       - name: Run tests
         run: pytest
 
-      # Step 5: upload the build output as an artifact so other jobs can use it
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-build
-          path: app.py
+      # Step 5: build a Docker image and push it to a registry
+      # This is "containerization" — the app + its runtime packed into one image
+      - name: Build Docker image
+        run: docker build -t my-app:${{ github.sha }} .
+
+      - name: Push image to registry
+        run: |
+          docker tag my-app:${{ github.sha }} ghcr.io/my-org/my-app:${{ github.sha }}
+          docker push ghcr.io/my-org/my-app:${{ github.sha }}
 EOF
 
 echo ""
@@ -118,7 +133,31 @@ echo "[Step 4] Run tests (no tests yet — this is what a green build looks like
 python3 -m pytest --tb=short 2>&1 || echo "(no test files found — add test_*.py files to fix this)"
 
 echo ""
-echo "[Step 5] The artifact would be uploaded here in real CI"
-echo "Artifact ready: app.py ($(wc -c < app.py) bytes)"
-
+echo "[Step 5] Build the Docker image locally — same as CI does"
+echo "  (CI would also push this to a registry like GHCR or ECR)"
 deactivate
+
+
+# ===========================================================================
+# BLOCK 3 — Build and run the Docker image
+#
+# docker build -t <name>:<tag> . : reads the Dockerfile and builds the image
+#                                   -t = tag (name + version label)
+#                                   .  = build context (current directory)
+#
+# docker run --rm <image> : run a container from the image, delete it after
+#
+# The image is the artifact. Any machine with Docker can run it identically.
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 3: build and run the Docker image ---"
+docker build -t my-app:demo .
+
+echo ""
+echo "--- Running the container ---"
+docker run --rm my-app:demo
+
+echo ""
+echo "--- Image size and layers ---"
+docker image inspect my-app:demo --format "Size: {{.Size}} bytes  |  Created: {{.Created}}"

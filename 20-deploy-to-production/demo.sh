@@ -115,7 +115,13 @@ jobs:
   deploy:
     needs: pre-flight          # blocked until pre-flight passes
     runs-on: ubuntu-latest
-    environment: production    # requires manual approval in GitHub Settings
+    # environment: production
+    #   This is a GitHub Actions "environment" — NOT just a variable name.
+    #   Set it up at: Repo → Settings → Environments → New environment → "production"
+    #   Then add "Required reviewers" — the deploy job will PAUSE and wait for
+    #   a human to click Approve in the GitHub UI before it continues.
+    #   This is your manual gate for production deployments.
+    environment: production
     steps:
       - uses: actions/checkout@v4
       - name: Deploy to production

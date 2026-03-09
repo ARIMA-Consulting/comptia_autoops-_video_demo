@@ -169,3 +169,52 @@ cat .github/workflows/with-secrets.yml
 echo ""
 echo "To add secrets in GitHub:"
 echo "  Repo → Settings → Secrets and variables → Actions → New repository secret"
+
+
+# ===========================================================================
+# BLOCK 6 — Enterprise secrets managers
+#
+# .env files and GitHub Secrets work for basic cases, but production
+# environments use dedicated secrets managers that add:
+#   - Audit logs (who accessed what, when)
+#   - Dynamic secret rotation (auto-rotate credentials on a schedule)
+#   - Fine-grained access control per service
+#   - Secrets never stored on disk — only fetched at runtime
+#
+# These map directly to Exam Objective 3.1: encrypted key vault, revocation,
+# lease management, tokenization, dynamic secret rotation.
+# ===========================================================================
+
+cat > secrets_manager_reference.sh << 'EOF'
+#!/bin/bash
+# Reference: how secrets managers work in practice
+# (These commands require the respective CLI tools installed)
+
+# --- HashiCorp Vault ---
+# Fetch a secret at runtime (never stored on disk):
+#   vault kv get -field=value secret/my-app/api-key
+
+# Write a secret (only admins do this, not the app itself):
+#   vault kv put secret/my-app/api-key value="sk-abc123"
+
+# Dynamic secrets: Vault generates a temporary DB credential, auto-revokes it:
+#   vault read database/creds/my-app-role
+#   # Returns: username=v-app-abc123  password=xyz  lease_duration=1h
+
+# --- AWS Secrets Manager ---
+# Fetch a secret:
+#   aws secretsmanager get-secret-value --secret-id my-app/api-key
+
+# In a Python app (boto3):
+#   import boto3, json
+#   client = boto3.client("secretsmanager")
+#   secret = json.loads(client.get_secret_value(SecretId="my-app/api-key")["SecretString"])
+
+# --- The key difference from .env ---
+# .env file      : secret lives on disk, manually rotated, commit risk
+# Secrets manager: fetched via API, audit logged, auto-rotates, revocable
+EOF
+
+echo ""
+echo "--- BLOCK 6: enterprise secrets manager reference ---"
+cat secrets_manager_reference.sh

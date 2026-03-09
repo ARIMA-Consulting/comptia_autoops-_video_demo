@@ -34,112 +34,129 @@ echo "Files ready."
 
 
 # ===========================================================================
-# BLOCK 1 — A simple declarative Jenkinsfile
+# BLOCK 1 — The minimal Jenkinsfile skeleton
 #
-# Declarative syntax (the modern way) uses a pipeline {} block.
-# Every Jenkinsfile has the same skeleton:
+# Every Jenkinsfile — no matter how complex — is just this structure:
 #   pipeline → agent → stages → stage → steps
+#
+# Start here. Once you can read this, everything else is just adding blocks.
 # ===========================================================================
 
-cat > Jenkinsfile << 'EOF'
-// Declarative Pipeline — the modern Jenkins syntax
+cat > Jenkinsfile.minimal << 'EOF'
 pipeline {
-
-    // agent: where does this pipeline run?
-    // "any" means Jenkins picks any available worker node
     agent any
 
-    // environment: variables available to every stage
-    environment {
-        APP_NAME = "my-app"
-        PYTHON_VERSION = "3.12"
-    }
-
     stages {
-
-        // Stage 1: get the code
-        stage("Checkout") {
+        stage("Build") {
             steps {
-                checkout scm   // scm = source control manager (your git repo)
-                echo "Checked out branch: ${env.BRANCH_NAME}"
+                sh "echo Building..."
             }
         }
-
-        // Stage 2: install dependencies
-        stage("Install") {
-            steps {
-                sh "pip install -r requirements.txt"
-            }
-        }
-
-        // Stage 3: run tests
         stage("Test") {
             steps {
-                sh "pytest test_app.py -v"
-            }
-            // post: what to do AFTER this stage based on outcome
-            post {
-                always {
-                    echo "Tests finished — archiving results"
-                    archiveArtifacts artifacts: "*.log", allowEmptyArchive: true
-                }
-                failure {
-                    echo "Tests FAILED — sending notification"
-                    // mail to: "team@example.com", subject: "Build failed"
-                }
+                sh "echo Testing..."
             }
         }
-
-        // Stage 4: only deploy if we are on the main branch
         stage("Deploy") {
-            when {
-                branch "main"   // conditional execution — skipped on feature branches
-            }
             steps {
-                echo "Deploying ${APP_NAME} to staging..."
-                sh "python app.py"
+                sh "echo Deploying..."
             }
-        }
-    }
-
-    // Global post block — runs after ALL stages
-    post {
-        success {
-            echo "Pipeline PASSED — build is green"
-        }
-        failure {
-            echo "Pipeline FAILED — check the logs above"
-        }
-        always {
-            echo "Pipeline complete. Cleaning workspace."
-            cleanWs()   // wipe the workspace after every build
         }
     }
 }
 EOF
 
 echo ""
-echo "--- BLOCK 1: the full Jenkinsfile ---"
+echo "--- BLOCK 1: minimal Jenkinsfile skeleton ---"
+cat Jenkinsfile.minimal
+
+
+# ===========================================================================
+# BLOCK 2 — The full annotated Jenkinsfile
+#
+# Now we add: environment variables, conditional execution (when),
+# per-stage post blocks, and a global post block.
+# The skeleton is still the same — these are just additions.
+# ===========================================================================
+
+cat > Jenkinsfile << 'EOF'
+pipeline {
+
+    agent any   // "any" = use any available Jenkins worker node
+
+    // environment: define variables once, use them in any stage as env.VARNAME
+    environment {
+        APP_NAME = "my-app"
+    }
+
+    stages {
+
+        stage("Checkout") {
+            steps {
+                checkout scm                          // checkout scm = clone your git repo
+                echo "Branch: ${env.BRANCH_NAME}"    // env.BRANCH_NAME is set by Jenkins
+            }
+        }
+
+        stage("Install") {
+            steps {
+                sh "pip install -r requirements.txt"  // sh "" = run a shell command
+            }
+        }
+
+        stage("Test") {
+            steps {
+                sh "pytest test_app.py -v"
+            }
+            post {                                    // post runs after THIS stage
+                failure {
+                    echo "Tests FAILED — notify team"
+                }
+            }
+        }
+
+        stage("Deploy") {
+            when {
+                branch "main"    // conditional: skip this stage on feature branches
+            }
+            steps {
+                echo "Deploying ${env.APP_NAME}..."
+                sh "python app.py"
+            }
+        }
+    }
+
+    // Global post: runs after ALL stages regardless of outcome
+    post {
+        success { echo "Pipeline PASSED" }
+        failure { echo "Pipeline FAILED — check logs" }
+        always  { cleanWs() }   // cleanWs() = wipe workspace after every build
+    }
+}
+EOF
+
+echo ""
+echo "--- BLOCK 2: full annotated Jenkinsfile ---"
 cat Jenkinsfile
 
 
 # ===========================================================================
-# BLOCK 2 — Key Jenkinsfile concepts explained
+# BLOCK 3 — Quick reference: Jenkinsfile vs YAML pipeline tools
 # ===========================================================================
 
 echo ""
-echo "=== Jenkinsfile anatomy ==="
+echo "=== Jenkinsfile keyword reference ==="
 echo ""
-echo "pipeline {}     : the root block — everything lives inside"
-echo "agent any       : run on any Jenkins node (or specify docker, label, etc.)"
-echo "environment {}  : define env vars accessible in all stages as env.VAR_NAME"
-echo "stages {}       : container for all your stage blocks"
-echo "stage('name') {}: one logical phase (Checkout, Build, Test, Deploy)"
-echo "steps {}        : the actual shell commands or built-in Jenkins steps"
-echo "when {}         : conditional — only run this stage if condition is true"
-echo "post {}         : run after stage or pipeline (always/success/failure/unstable)"
+echo "pipeline {}      : root block — everything lives here"
+echo "agent any        : run on any node (also: agent { docker 'python:3.12' })"
+echo "environment {}   : key=value pairs, access as env.KEY in any stage"
+echo "stage('name') {} : one logical phase — shows up as a column in the UI"
+echo "steps {}         : commands inside a stage (sh, echo, checkout, etc.)"
+echo "when {}          : gate — only run this stage if the condition is true"
+echo "post {}          : hooks — always / success / failure / unstable"
+echo "cleanWs()        : Jenkins built-in — wipes the workspace directory"
 echo ""
 echo "Groovy vs YAML:"
-echo "  Jenkins  = Groovy DSL  (.Jenkinsfile, no .yml)"
-echo "  GitHub Actions = YAML  (.github/workflows/*.yml)"
-echo "  GitLab CI      = YAML  (.gitlab-ci.yml)"
+echo "  Jenkins        = Groovy DSL  (Jenkinsfile, no extension)"
+echo "  GitHub Actions = YAML        (.github/workflows/*.yml)"
+echo "  GitLab CI      = YAML        (.gitlab-ci.yml)"
