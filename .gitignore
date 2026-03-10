@@ -1,0 +1,13 @@
+# Generated working directories created by demo scripts at runtime
+*-demo/
+branching-demo/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
