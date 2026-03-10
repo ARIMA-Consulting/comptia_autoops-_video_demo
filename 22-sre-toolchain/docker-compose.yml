@@ -1,0 +1,29 @@
+services:
+
+  # Python app that emits SLI metrics (uptime %, error rate, latency, error budget)
+  sre-app:
+    build: ./sre-app
+    ports:
+      - "8766:8000"    # raw Prometheus metrics: http://localhost:8766/metrics
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./alerts.yml:/etc/prometheus/alerts.yml
+    ports:
+      - "9090:9090"    # Prometheus UI: http://localhost:9090
+    depends_on:
+      - sre-app
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    ports:
+      - "9093:9093"    # Alertmanager UI: http://localhost:9093
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--log.level=warn'
+    depends_on:
+      - prometheus

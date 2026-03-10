@@ -1,0 +1,50 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'team']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 1h
+  receiver: 'default'
+
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: 'on-call-pager'
+
+    - matchers:
+        - severity = "warning"
+      receiver: 'slack-channel'
+
+receivers:
+  - name: 'default'
+    webhook_configs:
+      - url: 'http://localhost:9094/'
+
+  - name: 'on-call-pager'
+    # ==================================================================
+    # In production this is where PagerDuty / OpsGenie / Rootly hooks in
+    # Alertmanager becomes the bridge between Prometheus and your on-call tool
+    # ==================================================================
+    # pagerduty_configs:
+    #   - service_key: '<your-pagerduty-integration-key>'
+    #     description: '{{ .GroupLabels.alertname }}: {{ .Annotations.summary }}'
+    # opsgenie_configs:
+    #   - api_key: '<your-opsgenie-api-key>'
+    #     responders:
+    #       - name: 'platform-team'
+    #         type: team
+    webhook_configs:
+      - url: 'http://localhost:9094/critical'
+        send_resolved: true
+
+  - name: 'slack-channel'
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+    #     channel: '#alerts'
+    #     title: '{{ .GroupLabels.alertname }}'
+    #     text: '{{ .Annotations.summary }}'
+    webhook_configs:
+      - url: 'http://localhost:9094/warning'
+        send_resolved: true

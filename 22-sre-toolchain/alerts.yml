@@ -1,0 +1,37 @@
+groups:
+  - name: slo-alerts
+    rules:
+
+      # Fires when uptime drops below 99.9% — the SLO target
+      - alert: SLOBreached
+        expr: service_uptime_pct < 99.9
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "SLO BREACH: uptime {{ $value | printf \"%.2f\" }}% is below 99.9% target"
+          description: "Error budget is being consumed. Freeze non-critical deployments immediately."
+          runbook: "https://wiki.example.com/runbooks/slo-breach"
+
+      # Fires when P95 latency exceeds the 500ms SLO
+      - alert: HighLatency
+        expr: service_p95_latency_ms > 500
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "P95 latency {{ $value }}ms exceeds 500ms SLO"
+          description: "Users are experiencing slow responses. Check recent deploys."
+
+      # Fires immediately when error budget is exhausted
+      - alert: ErrorBudgetExhausted
+        expr: service_error_budget_min < 0
+        for: 0m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Error budget exhausted ({{ $value | printf \"%.1f\" }} min overrun)"
+          description: "Stop all non-critical deployments. Focus on reliability work only."

@@ -1,0 +1,20 @@
+services:
+
+  # The broken app — DATABASE_URL is intentionally wrong by default
+  app:
+    build: ./app
+    ports:
+      - "5001:5001"
+    environment:
+      # *** BUG: wrong host — students discover this in BLOCK 4 ***
+      - DATABASE_URL=postgresql://wrong-host:5432/mydb
+    # To fix: change wrong-host to db-host and restart
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9092:9090"    # http://localhost:9092 (avoids conflict with other demos)
+    depends_on:
+      - app

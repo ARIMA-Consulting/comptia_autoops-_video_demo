@@ -1,38 +1,65 @@
 #!/bin/bash
 # CompTIA AutoOps+ | The SRE Toolchain
 # Exam Objective 4.2 — SLOs, SLAs, uptime, MTBF, MTTR, feedback loop
+#
+# What this demo shows:
+#   1. Python SRE calculator — quantify uptime, MTBF, MTTR, error budget
+#   2. Error budget concept — the feedback loop that drives SRE decisions
+#   3. Prometheus alert rules — automated SLO breach detection
+#   4. Alertmanager — the routing layer between Prometheus and PagerDuty/Slack
+#   5. Runbook structure — what on-call engineers actually follow
+#
+# REQUIRES: Docker (already used in demos 08, 21)
+# Students: docker pull prom/alertmanager  (one-time, ~50MB)
 
 
+DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ===========================================================================
-# BLOCK 0 — Setup
+# BLOCK 0 — Setup: start the SRE observability stack
 #
-# SRE (Site Reliability Engineering) applies software engineering to operations.
-# The SRE toolchain is how they measure and enforce reliability.
-#
-# Key metrics:
-#   Uptime / Availability = (total time - downtime) / total time × 100%
-#   MTBF  = Mean Time Between Failures  (how often does it break?)
-#   MTTR  = Mean Time To Repair         (how fast can you fix it?)
-#   Error budget = 100% - SLO target    (how much failure is "allowed"?)
+# The sre-app emits Prometheus metrics for a service that is BELOW its SLO.
+# After ~1 minute, Prometheus will fire the SLOBreached alert and Alertmanager
+# will show it active and ready to route to PagerDuty/Slack.
 # ===========================================================================
+
+docker compose -f "$DEMO_DIR/docker-compose.yml" down 2>/dev/null || true
+docker rm -f sre-toolchain-sre-app-1 sre-toolchain-prometheus-1 sre-toolchain-alertmanager-1 2>/dev/null || true
 
 rm -rf sre-toolchain-demo
 mkdir sre-toolchain-demo
 cd sre-toolchain-demo
-echo "Setup done."
+
+echo "Starting SRE stack (Prometheus + Alertmanager + metrics app)..."
+docker compose -f "$DEMO_DIR/docker-compose.yml" up -d --build
+
+echo "Waiting for services..."
+until curl -sf http://localhost:9090/-/healthy >/dev/null 2>&1; do sleep 2; done
+until curl -sf http://localhost:9093/-/healthy >/dev/null 2>&1; do sleep 2; done
+echo "Stack is ready."
+echo ""
+echo "  Metrics (raw)  : http://localhost:8766/metrics"
+echo "  Prometheus     : http://localhost:9090"
+echo "  Alertmanager   : http://localhost:9093"
+echo ""
+echo "NOTE: The SLOBreached and ErrorBudgetExhausted alerts will fire after ~1 minute."
+echo "Begin recording."
 
 
 # ===========================================================================
-# BLOCK 1 — Calculate uptime and error budget from incident data
+# BLOCK 1 — Calculate uptime, MTBF, MTTR from real incident data
+#
+# This is the math every SRE does. You need to know these definitions cold
+# for the CompTIA exam. Uptime alone is not enough — you need MTBF and MTTR
+# to understand the failure pattern and repair capability of your team.
 # ===========================================================================
 
 cat > sre_calculator.py << 'EOF'
 from datetime import timedelta
 
-# ---- Input: incident history for the past 30 days ----
-WINDOW_HOURS = 30 * 24   # 720 hours in a 30-day month
+# ---- 30-day incident history ----
+WINDOW_HOURS = 30 * 24   # 720 hours
 
-# Each tuple is (start_hour, duration_minutes) of an outage
 incidents = [
     {"start_hour": 48,  "duration_min": 12,  "cause": "database OOM"},
     {"start_hour": 156, "duration_min": 3,   "cause": "bad deploy — auto-rollback"},
@@ -40,34 +67,29 @@ incidents = [
     {"start_hour": 589, "duration_min": 8,   "cause": "certificate expiry"},
 ]
 
-SLO_TARGET = 99.9   # our internal target: 99.9% uptime
+SLO_TARGET = 99.9   # 99.9% uptime SLO
 
-# ---- Calculations ----
-total_minutes   = WINDOW_HOURS * 60
-downtime_min    = sum(i["duration_min"] for i in incidents)
-uptime_min      = total_minutes - downtime_min
-availability    = (uptime_min / total_minutes) * 100
-error_budget_min = total_minutes * ((100 - SLO_TARGET) / 100)
+total_min        = WINDOW_HOURS * 60
+downtime_min     = sum(i["duration_min"] for i in incidents)
+uptime_min       = total_min - downtime_min
+availability     = (uptime_min / total_min) * 100
+error_budget_min = total_min * ((100 - SLO_TARGET) / 100)
 budget_remaining = error_budget_min - downtime_min
 budget_pct_used  = (downtime_min / error_budget_min) * 100
-
-# MTBF and MTTR
-mtbf_hours = WINDOW_HOURS / len(incidents)
-mttr_min   = downtime_min / len(incidents)
+mtbf_hours       = WINDOW_HOURS / len(incidents)
+mttr_min         = downtime_min / len(incidents)
 
 print("=== SRE Reliability Report (30-day window) ===")
 print()
-print(f"  Total window      : {total_minutes:,} minutes ({WINDOW_HOURS} hours)")
-print(f"  Downtime          : {downtime_min} minutes")
 print(f"  Availability      : {availability:.4f}%")
 print(f"  SLO target        : {SLO_TARGET}%")
 print()
-print(f"  Error budget      : {error_budget_min:.1f} min/month at {SLO_TARGET}% SLO")
+print(f"  Error budget      : {error_budget_min:.1f} min/month  (0.1% of 720 hours)")
 print(f"  Budget used       : {downtime_min} min ({budget_pct_used:.1f}%)")
 print(f"  Budget remaining  : {max(budget_remaining, 0):.1f} min")
 print()
-print(f"  MTBF              : {mtbf_hours:.1f} hours between failures")
-print(f"  MTTR              : {mttr_min:.1f} minutes average repair time")
+print(f"  MTBF              : {mtbf_hours:.1f} hours  (mean time BETWEEN failures)")
+print(f"  MTTR              : {mttr_min:.1f} minutes (mean time TO REPAIR)")
 print()
 
 if availability >= SLO_TARGET:
@@ -76,7 +98,7 @@ else:
     print(f"  ✗ SLO MISSED — {availability:.4f}% < {SLO_TARGET}%")
 
 if budget_remaining > 0:
-    print(f"  ✓ Error budget has {budget_remaining:.1f} minutes remaining this month")
+    print(f"  ✓ Error budget: {budget_remaining:.1f} minutes remaining")
 else:
     print(f"  ✗ Error budget EXHAUSTED — freeze non-critical deployments")
 
@@ -92,37 +114,39 @@ python3 sre_calculator.py
 
 
 # ===========================================================================
-# BLOCK 2 — The error budget concept
+# BLOCK 2 — Error budget: the SRE feedback loop
 #
-# Error budget is what makes SRE different from just "keep it up."
-# It gives engineers PERMISSION to take risks (deploy features, do maintenance)
-# up to the point where the SLO would be violated.
+# Error budget is what separates SRE from traditional ops.
+# It's not "never go down" — it's "you have X minutes of failure allowed."
+# When the budget is consumed, you stop shipping features and fix reliability.
+# This feedback loop is what the CompTIA exam tests on for Exam Obj 4.2.
 # ===========================================================================
 
 cat > error_budget.py << 'EOF'
-SLO      = 99.9      # 99.9% uptime
-WINDOW_D = 30        # days
+SLO      = 99.9
+WINDOW_D = 30
 
-total_min       = WINDOW_D * 24 * 60
-budget_min      = total_min * ((100 - SLO) / 100)
-budget_sec      = budget_min * 60
+total_min   = WINDOW_D * 24 * 60
+budget_min  = total_min * ((100 - SLO) / 100)
+budget_sec  = budget_min * 60
 
 print(f"=== Error Budget at {SLO}% SLO over {WINDOW_D} days ===")
 print()
-print(f"  Budget = {budget_min:.1f} minutes = {budget_sec:.0f} seconds per month")
+print(f"  Allowed downtime  : {budget_min:.1f} minutes = {budget_sec:.0f} seconds / month")
 print()
-print("  What eats into this budget:")
-print("   - Every minute of unplanned downtime")
-print("   - Failed deployments that cause errors (even brief ones)")
-print("   - Dependency outages (if your SLA covers them)")
+print("  What consumes the budget:")
+print("    - Every minute of unplanned downtime")
+print("    - Failed deploys that cause errors (even brief ones)")
+print("    - Dependency outages if your SLA covers them")
 print()
-print("  When the budget runs out:")
-print("   - Stop deploying new features")
-print("   - Focus 100% on reliability work")
-print("   - Resume deployments next month when budget resets")
+print("  When budget hits 0:")
+print("    STOP  → no new feature deployments")
+print("    FOCUS → 100% on reliability improvements")
+print("    RESET → budget renews next calendar month")
 print()
-print("  This is the FEEDBACK LOOP:")
-print("   SLI measured → compared to SLO → budget consumed → team adjusts work")
+print("  The feedback loop (Exam Obj 4.2):")
+print("    SLI measured → compared to SLO → budget consumed → team adjusts priorities")
+print("    This is what keeps engineering teams honest about reliability.")
 EOF
 
 echo ""
@@ -131,36 +155,122 @@ python3 error_budget.py
 
 
 # ===========================================================================
-# BLOCK 3 — On-call runbook structure
+# BLOCK 3 — Prometheus: automated SLO monitoring
 #
-# SREs use runbooks to standardize incident response.
-# A runbook is a script for humans: if X happens, do Y.
+# The alert rules in alerts.yml define what triggers on-call.
+# Prometheus evaluates these every 5 seconds against live metrics.
+# The sre-app is emitting 99.84% uptime — the SLOBreached alert will fire.
 # ===========================================================================
 
-cat > runbook_example.md << 'EOF'
-# Runbook: Database Connection Failures
+echo ""
+echo "--- BLOCK 3: Prometheus SLO alert rules ---"
+echo ""
+echo "Alert rules (alerts.yml):"
+cat "$DEMO_DIR/alerts.yml"
 
-**Alert:** `db_connection_errors > 10 per minute for 5 minutes`
+echo ""
+echo "Query SLI metrics live:"
+curl -s "http://localhost:9090/api/v1/query?query=service_uptime_pct" \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+r = d.get('data', {}).get('result', [])
+if r:
+    print(f\"  service_uptime_pct = {float(r[0]['value'][1]):.2f}%  (SLO target: 99.9%)\")
+else:
+    print('  (metrics not scraped yet — wait a few seconds and retry)')
+"
+
+echo ""
+echo "Open your browser: http://localhost:9090/alerts"
+echo "You will see SLOBreached and ErrorBudgetExhausted in FIRING state."
+echo "Prometheus is running the exact same alert evaluation as production systems."
+
+
+# ===========================================================================
+# BLOCK 4 — Alertmanager: the on-call routing layer
+#
+# Alertmanager receives alerts from Prometheus and routes them.
+# This is where PagerDuty, OpsGenie, Rootly, and Slack connect.
+# In production: critical alerts page the on-call engineer immediately.
+# In the exam: know that Alertmanager is the routing bridge between
+#              Prometheus metrics and your incident management platform.
+# ===========================================================================
+
+echo ""
+echo "--- BLOCK 4: Alertmanager — the PagerDuty integration point ---"
+echo ""
+echo "Routing config (alertmanager.yml):"
+cat "$DEMO_DIR/alertmanager.yml"
+
+echo ""
+echo "Check active alerts via Alertmanager API:"
+sleep 2
+curl -s http://localhost:9093/api/v2/alerts | python3 -c "
+import sys, json
+alerts = json.load(sys.stdin)
+if alerts:
+    for a in alerts:
+        labels = a.get('labels', {})
+        ann    = a.get('annotations', {})
+        status = a.get('status', {}).get('state', 'unknown')
+        print(f\"  [{status.upper()}] {labels.get('alertname')} — {ann.get('summary', '')}\")
+else:
+    print('  (no active alerts yet — wait ~1 minute for SLO rules to fire)')
+"
+
+echo ""
+echo "Open your browser: http://localhost:9093"
+echo "You will see the active alerts and the routing tree."
+echo ""
+echo "In production, 'on-call-pager' receiver config would be:"
+echo "  pagerduty_configs:"
+echo "    - service_key: '<your-pagerduty-key>'"
+echo "  opsgenie_configs:"
+echo "    - api_key: '<your-key>'"
+echo "    (Rootly and other tools also use this webhook/API pattern)"
+
+
+# ===========================================================================
+# BLOCK 5 — Runbook: what on-call engineers actually do when paged
+#
+# The alert fires → Alertmanager pages on-call → engineer opens runbook.
+# This is the documented playbook that turns an alert into a fix.
+# ===========================================================================
+
+cat > runbook_db_failures.md << 'EOF'
+# Runbook: SLO Breach — High Error Rate
+
+**Alert:** `SLOBreached` — uptime below 99.9% for > 1 minute
 **Severity:** P1 (production impacting)
 **Owner:** Platform team
 
-## Immediate steps (< 5 minutes)
-1. Check `kubectl get pods -n database` — are DB pods running?
-2. Check `kubectl logs <db-pod>` — any OOM or crash messages?
-3. Check DB CPU/memory metrics in Datadog dashboard
+## Immediate steps (first 5 minutes)
+1. `kubectl get pods -n production` — are all pods healthy?
+2. `kubectl logs <failing-pod> --tail=50` — look for the FIRST error
+3. Check Prometheus: `rate(http_requests_total{status=~"5.."}[5m])`
+4. Check Grafana error rate dashboard — is error rate > 1%?
 
-## If pods are healthy but errors continue
-4. Check connection pool: `SELECT count(*) FROM pg_stat_activity`
-5. If pool exhausted: `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle'`
+## Common causes and fixes
+| Symptom                | Likely cause          | Fix                              |
+|------------------------|-----------------------|----------------------------------|
+| DB connection errors   | DB pod OOM or down    | Restart DB, check memory limits  |
+| 502/503 errors          | Deployment rolling    | Wait 2min, check rollout status  |
+| Auth failures           | Expired certificate   | Rotate cert, restart auth service|
 
 ## Escalation
-- If not resolved in 15 minutes: page database team
-- If resolved: update incident channel, schedule post-mortem within 48h
+- Not resolved in 15 min: page database team lead
+- Not resolved in 30 min: page engineering manager
 
-## Rollback trigger
-- If errors exceed 50/min: initiate rollback to previous version
+## After resolution
+- Document in incident channel
+- Schedule post-mortem within 48 hours
+- Add/update alert runbook with what you learned
 EOF
 
 echo ""
-echo "--- BLOCK 3: runbook structure ---"
-cat runbook_example.md
+echo "--- BLOCK 5: on-call runbook ---"
+cat runbook_db_failures.md
+
+echo ""
+echo "Cleanup: docker compose -f $DEMO_DIR/docker-compose.yml down"
